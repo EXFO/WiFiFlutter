@@ -8,10 +8,13 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
+import android.net.LinkAddress;
+import android.net.LinkProperties;
 import android.net.MacAddress;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
+import android.net.TransportInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.SupplicantState;
@@ -20,6 +23,7 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiNetworkSpecifier;
 import android.net.wifi.WifiNetworkSuggestion;
+import android.net.wifi.WifiSsid;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -27,7 +31,10 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import info.whitebyte.hotspotmanager.ClientScanResult;
 import info.whitebyte.hotspotmanager.FinishScanListener;
 import info.whitebyte.hotspotmanager.WIFI_AP_STATE;
@@ -676,8 +683,18 @@ public class WifiIotPlugin
 
   private void _onListen(EventChannel.EventSink eventSink) {
     receiver = createReceiver(eventSink);
-    moContext.registerReceiver(
-        receiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+    registerScanResultsReceiver(receiver);
+  }
+
+  @SuppressWarnings("deprecation")
+  private void registerScanResultsReceiver(BroadcastReceiver broadcastReceiver) {
+    IntentFilter filter = new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      // API 33+
+      moContext.registerReceiver(broadcastReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+    } else {
+      moContext.registerReceiver(broadcastReceiver, filter);
+    }
   }
 
   @Override
@@ -704,9 +721,10 @@ public class WifiIotPlugin
     try {
       for (ScanResult result : results) {
         JSONObject wifiObject = new JSONObject();
-        if (!result.SSID.equals("")) {
+        String ssid = ssidFromScanResult(result);
+        if (ssid != null && !ssid.isEmpty()) {
 
-          wifiObject.put("SSID", result.SSID);
+          wifiObject.put("SSID", ssid);
           wifiObject.put("BSSID", result.BSSID);
           wifiObject.put("capabilities", result.capabilities);
           wifiObject.put("frequency", result.frequency);
@@ -1014,7 +1032,7 @@ public class WifiIotPlugin
         String security = null;
         List<ScanResult> results = moWiFi.getScanResults();
         for (ScanResult result : results) {
-          String resultString = "" + result.SSID;
+          String resultString = ssidFromScanResult(result);
           if (ssid.equals(resultString)
               && (result.BSSID == null || bssid == null || result.BSSID.equals(bssid))) {
             security = getSecurityType(result);
@@ -1136,11 +1154,11 @@ public class WifiIotPlugin
 
   /// This method will return current ssid
   private void getSSID(Result poResult) {
-    WifiInfo info = moWiFi.getConnectionInfo();
+    WifiInfo info = getCurrentWifiInfo();
 
     // This value should be wrapped in double quotes, so we need to unwrap it.
     String ssid = info.getSSID();
-    if (ssid.startsWith("\"") && ssid.endsWith("\"")) {
+    if (ssid != null && ssid.startsWith("\"") && ssid.endsWith("\"")) {
       ssid = ssid.substring(1, ssid.length() - 1);
     }
 
@@ -1149,12 +1167,12 @@ public class WifiIotPlugin
 
   /// This method will return the basic service set identifier (BSSID) of the current access point
   private void getBSSID(Result poResult) {
-    WifiInfo info = moWiFi.getConnectionInfo();
+    WifiInfo info = getCurrentWifiInfo();
 
     String bssid = info.getBSSID();
 
     try {
-      poResult.success(bssid.toUpperCase());
+      poResult.success(bssid != null ? bssid.toUpperCase() : null);
     } catch (Exception e) {
       poResult.error("Exception", e.getMessage(), null);
     }
@@ -1162,13 +1180,12 @@ public class WifiIotPlugin
 
   /// This method will return current WiFi signal strength
   private void getCurrentSignalStrength(Result poResult) {
-    int linkSpeed = moWiFi.getConnectionInfo().getRssi();
-    poResult.success(linkSpeed);
+    poResult.success(getCurrentWifiInfo().getRssi());
   }
 
   /// This method will return current WiFi frequency
   private void getFrequency(Result poResult) {
-    WifiInfo info = moWiFi.getConnectionInfo();
+    WifiInfo info = getCurrentWifiInfo();
     int frequency = 0;
     if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
       frequency = info.getFrequency();
@@ -1178,8 +1195,7 @@ public class WifiIotPlugin
 
   /// This method will return current IP
   private void getIP(Result poResult) {
-    WifiInfo info = moWiFi.getConnectionInfo();
-    String stringip = longToIP(info.getIpAddress());
+    String stringip = getCurrentWifiIpv4();
     poResult.success(stringip);
   }
 
@@ -1533,7 +1549,7 @@ public class WifiIotPlugin
 
     boolean connected = false;
     for (int i = 0; i < 20; i++) {
-      WifiInfo currentNet = moWiFi.getConnectionInfo();
+      WifiInfo currentNet = getCurrentWifiInfo();
       int networkId = currentNet.getNetworkId();
       SupplicantState netState = currentNet.getSupplicantState();
 
@@ -1551,5 +1567,134 @@ public class WifiIotPlugin
     }
 
     return connected;
+  }
+
+  @NonNull
+  @SuppressWarnings("deprecation")
+  private WifiInfo getCurrentWifiInfo() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      // API 31+
+      WifiInfo wifiInfo = wifiInfoFromConnectivityManager();
+      if (wifiInfo != null) {
+        return wifiInfo;
+      }
+    }
+    return moWiFi.getConnectionInfo();
+  }
+
+  @Nullable
+  @RequiresApi(Build.VERSION_CODES.S)
+  private WifiInfo wifiInfoFromConnectivityManager() {
+    ConnectivityManager connectivityManager =
+        (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+    if (connectivityManager == null) {
+      return null;
+    }
+
+    if (joinedNetwork != null) {
+      WifiInfo joinedInfo = wifiInfoFromNetwork(connectivityManager, joinedNetwork);
+      if (joinedInfo != null) {
+        return joinedInfo;
+      }
+    }
+
+    Network activeNetwork = connectivityManager.getActiveNetwork();
+    if (activeNetwork != null) {
+      NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(activeNetwork);
+      if (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+        return wifiInfoFromCapabilities(capabilities);
+      }
+    }
+
+    return null;
+  }
+
+  @Nullable
+  @RequiresApi(Build.VERSION_CODES.Q)
+  private WifiInfo wifiInfoFromNetwork(
+      ConnectivityManager connectivityManager, Network network) {
+    NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(network);
+    return capabilities != null ? wifiInfoFromCapabilities(capabilities) : null;
+  }
+
+  @Nullable
+  @RequiresApi(Build.VERSION_CODES.Q)
+  private WifiInfo wifiInfoFromCapabilities(NetworkCapabilities capabilities) {
+    TransportInfo transportInfo = capabilities.getTransportInfo();
+    if (transportInfo instanceof WifiInfo) {
+      return (WifiInfo) transportInfo;
+    }
+    return null;
+  }
+
+  @Nullable
+  @SuppressWarnings("deprecation")
+  private String getCurrentWifiIpv4() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      // API 31+
+      String ipv4 = ipv4FromLinkProperties();
+      if (ipv4 != null) {
+        return ipv4;
+      }
+    }
+    return longToIP(getCurrentWifiInfo().getIpAddress());
+  }
+
+  @Nullable
+  @RequiresApi(Build.VERSION_CODES.S)
+  private String ipv4FromLinkProperties() {
+    ConnectivityManager connectivityManager =
+        (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+    if (connectivityManager == null) {
+      return null;
+    }
+
+    Network wifiNetwork = joinedNetwork;
+    if (wifiNetwork == null) {
+      Network activeNetwork = connectivityManager.getActiveNetwork();
+      if (activeNetwork != null) {
+        NetworkCapabilities capabilities =
+            connectivityManager.getNetworkCapabilities(activeNetwork);
+        if (capabilities != null
+            && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+          wifiNetwork = activeNetwork;
+        }
+      }
+    }
+
+    if (wifiNetwork == null) {
+      return null;
+    }
+
+    LinkProperties linkProperties = connectivityManager.getLinkProperties(wifiNetwork);
+    if (linkProperties == null) {
+      return null;
+    }
+
+    for (LinkAddress linkAddress : linkProperties.getLinkAddresses()) {
+      InetAddress address = linkAddress.getAddress();
+      if (address instanceof Inet4Address) {
+        return address.getHostAddress();
+      }
+    }
+    return null;
+  }
+
+  @Nullable
+  @SuppressWarnings("deprecation")
+  private static String ssidFromScanResult(ScanResult result) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      // API 33+
+      WifiSsid wifiSsid = result.getWifiSsid();
+      if (wifiSsid == null) {
+        return null;
+      }
+      String ssid = wifiSsid.toString();
+      if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() >= 2) {
+        return ssid.substring(1, ssid.length() - 1);
+      }
+      return ssid;
+    }
+    return result.SSID;
   }
 }

@@ -96,9 +96,18 @@ class WifiScanPlugin :
             }
           }
         }
-    val intentFilter = IntentFilter()
-    intentFilter.addAction(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
-    context.registerReceiver(wifiScanReceiver, intentFilter)
+        val intentFilter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // API 33+
+            context.registerReceiver(
+                wifiScanReceiver,
+                intentFilter,
+                Context.RECEIVER_NOT_EXPORTED
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            context.registerReceiver(wifiScanReceiver, intentFilter)
+        }
 
     // set Flutter channels - 1 for method, 1 for event
     channel = MethodChannel(flutterPluginBinding.binaryMessenger, "wifi_scan")
@@ -256,36 +265,40 @@ class WifiScanPlugin :
   private fun getScannedResults(): List<Map<String, Any?>> =
       wifi!!.scanResults.map { ap ->
         mapOf(
-            "ssid" to ap.SSID,
+            "ssid" to ssidFromScanResult(ap),
             "bssid" to ap.BSSID,
             "capabilities" to ap.capabilities,
             "frequency" to ap.frequency,
             "level" to ap.level,
-            "timestamp" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) ap.timestamp
-                else null,
-            "standard" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ap.wifiStandard else null,
-            "centerFrequency0" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.centerFreq0 else null,
-            "centerFrequency1" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.centerFreq1 else null,
-            "channelWidth" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.channelWidth else null,
-            "isPasspoint" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.isPasspointNetwork else null,
-            "operatorFriendlyName" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.operatorFriendlyName
-                else null,
-            "venueName" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.venueName else null,
-            "is80211mcResponder" to
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.is80211mcResponder else null)
-      }
+            "timestamp" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) ap.timestamp else null,
+            "standard" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ap.wifiStandard else null,
+            "centerFrequency0" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.centerFreq0 else null,
+            "centerFrequency1" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.centerFreq1 else null,
+            "channelWidth" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.channelWidth else null,
+            "isPasspoint" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.isPasspointNetwork else null,
+            "operatorFriendlyName" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                @Suppress("DEPRECATION") ap.operatorFriendlyName?.toString()
+            } else null,
+            "venueName" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                @Suppress("DEPRECATION") ap.venueName?.toString()
+            } else null,
+            "is80211mcResponder" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.is80211mcResponder else null
+        )
+    }
 
-  private fun onScannedResultsAvailable() {
-    eventSink?.success(getScannedResults())
-  }
+    private fun ssidFromScanResult(ap: android.net.wifi.ScanResult): String? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // API 33+
+            val wifiSsid = ap.wifiSsid ?: return null
+            return wifiSsid.toString().trim('"')
+        }
+        @Suppress("DEPRECATION")
+        return ap.SSID
+    }
+
+    private fun onScannedResultsAvailable() {
+        eventSink?.success(getScannedResults())
+    }
 
   /** ACCESS_FINE_LOCATION required for: SDK >= Q[29] and tSDK >= Q[29] */
   private fun requiresFineLocation(): Boolean =
