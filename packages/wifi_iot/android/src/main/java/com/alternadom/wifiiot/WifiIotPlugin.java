@@ -35,6 +35,8 @@ import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.List;
 import info.whitebyte.hotspotmanager.ClientScanResult;
 import info.whitebyte.hotspotmanager.FinishScanListener;
 import info.whitebyte.hotspotmanager.WIFI_AP_STATE;
@@ -1162,6 +1164,12 @@ public class WifiIotPlugin
       ssid = ssid.substring(1, ssid.length() - 1);
     }
 
+    // Android returns this sentinel when the SSID is not readable (permissions / OEM).
+    if (ssid == null || ssid.equals("<unknown ssid>") || ssid.equals("0x")) {
+      poResult.success(null);
+      return;
+    }
+
     poResult.success(ssid);
   }
 
@@ -1591,22 +1599,57 @@ public class WifiIotPlugin
       return null;
     }
 
-    if (joinedNetwork != null) {
-      WifiInfo joinedInfo = wifiInfoFromNetwork(connectivityManager, joinedNetwork);
-      if (joinedInfo != null) {
-        return joinedInfo;
-      }
-    }
-
-    Network activeNetwork = connectivityManager.getActiveNetwork();
-    if (activeNetwork != null) {
-      NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(activeNetwork);
-      if (capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-        return wifiInfoFromCapabilities(capabilities);
+    for (Network network : wifiNetworksOrdered(connectivityManager)) {
+      WifiInfo wifiInfo = wifiInfoFromNetwork(connectivityManager, network);
+      if (wifiInfo != null && hasReadableSsid(wifiInfo)) {
+        return wifiInfo;
       }
     }
 
     return null;
+  }
+
+  @RequiresApi(Build.VERSION_CODES.M)
+  private List<Network> wifiNetworksOrdered(ConnectivityManager connectivityManager) {
+    List<Network> ordered = new ArrayList<>();
+    if (joinedNetwork != null) {
+      ordered.add(joinedNetwork);
+    }
+
+    List<Network> activeWifi = new ArrayList<>();
+    List<Network> rest = new ArrayList<>();
+    Network activeNetwork = connectivityManager.getActiveNetwork();
+
+    for (Network network : connectivityManager.getAllNetworks()) {
+      if (joinedNetwork != null && network.equals(joinedNetwork)) {
+        continue;
+      }
+      NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(network);
+      if (capabilities == null || !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+        continue;
+      }
+      if (activeNetwork != null && network.equals(activeNetwork)) {
+        activeWifi.add(network);
+      } else {
+        rest.add(network);
+      }
+    }
+
+    ordered.addAll(activeWifi);
+    ordered.addAll(rest);
+    return ordered;
+  }
+
+  @SuppressWarnings("deprecation")
+  private boolean hasReadableSsid(@NonNull WifiInfo wifiInfo) {
+    String ssid = wifiInfo.getSSID();
+    if (ssid == null) {
+      return false;
+    }
+    if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() >= 2) {
+      ssid = ssid.substring(1, ssid.length() - 1);
+    }
+    return !ssid.isEmpty() && !ssid.equals("<unknown ssid>") && !ssid.equals("0x");
   }
 
   @Nullable
@@ -1649,32 +1692,16 @@ public class WifiIotPlugin
       return null;
     }
 
-    Network wifiNetwork = joinedNetwork;
-    if (wifiNetwork == null) {
-      Network activeNetwork = connectivityManager.getActiveNetwork();
-      if (activeNetwork != null) {
-        NetworkCapabilities capabilities =
-            connectivityManager.getNetworkCapabilities(activeNetwork);
-        if (capabilities != null
-            && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-          wifiNetwork = activeNetwork;
-        }
+    for (Network wifiNetwork : wifiNetworksOrdered(connectivityManager)) {
+      LinkProperties linkProperties = connectivityManager.getLinkProperties(wifiNetwork);
+      if (linkProperties == null) {
+        continue;
       }
-    }
-
-    if (wifiNetwork == null) {
-      return null;
-    }
-
-    LinkProperties linkProperties = connectivityManager.getLinkProperties(wifiNetwork);
-    if (linkProperties == null) {
-      return null;
-    }
-
-    for (LinkAddress linkAddress : linkProperties.getLinkAddresses()) {
-      InetAddress address = linkAddress.getAddress();
-      if (address instanceof Inet4Address) {
-        return address.getHostAddress();
+      for (LinkAddress linkAddress : linkProperties.getLinkAddresses()) {
+        InetAddress address = linkAddress.getAddress();
+        if (address instanceof Inet4Address) {
+          return address.getHostAddress();
+        }
       }
     }
     return null;
