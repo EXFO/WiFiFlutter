@@ -27,16 +27,19 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Modern STA backend for API 29+. */
 @RequiresApi(api = Build.VERSION_CODES.Q) // API 29+
 @SuppressWarnings("deprecation") // API < 31
 public final class ModernWifiPlatform implements WifiPlatform {
   private static final String TAG = "ModernWifiPlatform";
+  private static final int DEFAULT_TIMEOUT_MS = 30000;
 
   private final Context context;
   private final WifiManager wifiManager;
   private final ConnectivityManager connectivityManager;
+  private final Handler handler = new Handler(Looper.getMainLooper());
 
   private ConnectivityManager.NetworkCallback networkCallback;
   private List<WifiNetworkSuggestion> networkSuggestions;
@@ -52,8 +55,6 @@ public final class ModernWifiPlatform implements WifiPlatform {
 
   @Override
   public void connect(WifiConnectRequest request, WifiConnectCallback callback) {
-    final Handler handler = new Handler(Looper.getMainLooper());
-
     if (request.security != null && request.security.toUpperCase().equals("WEP")) {
       handler.post(
           () ->
@@ -65,18 +66,19 @@ public final class ModernWifiPlatform implements WifiPlatform {
     }
 
     if (request.withInternet != null && request.withInternet) {
-      connectWithSuggestion(request, callback, handler);
+      connectWithSuggestion(request, callback);
     } else {
-      connectWithSpecifier(request, callback, handler);
+      connectWithSpecifier(request, callback);
     }
   }
 
   private void connectWithSuggestion(
       WifiConnectRequest request, WifiConnectCallback callback, Handler handler) {
+  private void connectWithSuggestion(WifiConnectRequest request, WifiConnectCallback callback) {
     final WifiNetworkSuggestion.Builder builder = new WifiNetworkSuggestion.Builder();
     builder.setSsid(request.ssid);
     builder.setIsHiddenSsid(request.isHidden != null ? request.isHidden : false);
-    if (!applyBssid(builder, request.bssid, callback, handler)) {
+    if (!applyBssid(builder, request.bssid, callback)) {
       return;
     }
     if (request.security != null && request.security.toUpperCase().equals("WPA")) {
@@ -94,18 +96,21 @@ public final class ModernWifiPlatform implements WifiPlatform {
       suggestionsToRemoveOnClose.add(suggestion);
     }
 
-    final int status = wifiManager.addNetworkSuggestions(networkSuggestions);
-    Log.e(TAG, "status: " + status);
-    handler.post(
-        () -> callback.onSuccess(status == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS));
+    int status = wifiManager.addNetworkSuggestions(networkSuggestions);
+    if (status == WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_ADD_DUPLICATE) {
+      wifiManager.removeNetworkSuggestions(networkSuggestions);
+      status = wifiManager.addNetworkSuggestions(networkSuggestions);
+    }
+    Log.d(TAG, "addNetworkSuggestions status: " + status + " (suggestion_added_async if SUCCESS)");
+    final boolean added = status == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS;
+    handler.post(() -> callback.onSuccess(added));
   }
 
-  private void connectWithSpecifier(
-      WifiConnectRequest request, WifiConnectCallback callback, Handler handler) {
+  private void connectWithSpecifier(WifiConnectRequest request, WifiConnectCallback callback) {
     final WifiNetworkSpecifier.Builder builder = new WifiNetworkSpecifier.Builder();
     builder.setSsid(request.ssid);
     builder.setIsHiddenSsid(request.isHidden != null ? request.isHidden : false);
-    if (!applyBssid(builder, request.bssid, callback, handler)) {
+    if (!applyBssid(builder, request.bssid, callback)) {
       return;
     }
     if (request.security != null && request.security.toUpperCase().equals("WPA")) {
@@ -119,44 +124,57 @@ public final class ModernWifiPlatform implements WifiPlatform {
             .setNetworkSpecifier(builder.build())
             .build();
 
-    if (networkCallback != null) {
-      connectivityManager.unregisterNetworkCallback(networkCallback);
-    }
+    unregisterNetwork(networkCallback);
+    networkCallback = null;
 
     Integer timeoutInSeconds = request.timeoutInSeconds;
-    int timeoutMs = timeoutInSeconds != null ? timeoutInSeconds * 1000 : 30000;
+    int timeoutMs =
+        timeoutInSeconds != null ? timeoutInSeconds * 1000 : DEFAULT_TIMEOUT_MS;
+
+    final AtomicBoolean done = new AtomicBoolean(false);
 
     networkCallback =
         new ConnectivityManager.NetworkCallback() {
-          boolean resultSent = false;
-
           @Override
           public void onAvailable(@NonNull Network network) {
             super.onAvailable(network);
-            if (!resultSent) {
-              joinedNetwork = network;
-              callback.onSuccess(true);
-              resultSent = true;
+            if (!done.compareAndSet(false, true)) {
+              return;
             }
+            joinedNetwork = network;
+            connectivityManager.bindProcessToNetwork(network);
+            handler.post(() -> callback.onSuccess(true));
           }
 
           @Override
           public void onUnavailable() {
             super.onUnavailable();
-            if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) { // API 29 only
-              connectivityManager.unregisterNetworkCallback(this);
+            if (!done.compareAndSet(false, true)) {
+              return;
             }
-            if (!resultSent) {
-              callback.onSuccess(false);
-              resultSent = true;
+            // Keep callback registered on API 30+ so a later user approval can still deliver
+            // onAvailable; on API 29, unregister to avoid leaks after terminal failure.
+            if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+              unregisterNetwork(this);
+              if (networkCallback == this) {
+                networkCallback = null;
+              }
             }
+            handler.post(() -> callback.onSuccess(false));
           }
 
           @Override
           public void onLost(Network network) {
             super.onLost(network);
-            if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) { // API 29 only
-              connectivityManager.unregisterNetworkCallback(this);
+            if (joinedNetwork != null && joinedNetwork.equals(network)) {
+              connectivityManager.bindProcessToNetwork(null);
+              joinedNetwork = null;
+            }
+            if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+              unregisterNetwork(this);
+              if (networkCallback == this) {
+                networkCallback = null;
+              }
             }
           }
         };
@@ -167,8 +185,7 @@ public final class ModernWifiPlatform implements WifiPlatform {
   private boolean applyBssid(
       WifiNetworkSuggestion.Builder builder,
       @Nullable String bssid,
-      WifiConnectCallback callback,
-      Handler handler) {
+      WifiConnectCallback callback) {
     if (bssid == null) {
       return true;
     }
@@ -184,8 +201,7 @@ public final class ModernWifiPlatform implements WifiPlatform {
   private boolean applyBssid(
       WifiNetworkSpecifier.Builder builder,
       @Nullable String bssid,
-      WifiConnectCallback callback,
-      Handler handler) {
+      WifiConnectCallback callback) {
     if (bssid == null) {
       return true;
     }
@@ -200,19 +216,31 @@ public final class ModernWifiPlatform implements WifiPlatform {
 
   @Override
   public boolean disconnect() {
-    if (networkCallback != null) {
-      connectivityManager.unregisterNetworkCallback(networkCallback);
-      networkCallback = null;
-      joinedNetwork = null;
-      return true;
-    }
+    connectivityManager.bindProcessToNetwork(null);
+    joinedNetwork = null;
+
+    boolean hasCallback = networkCallback != null;
+    unregisterNetwork(networkCallback);
+    networkCallback = null;
+
+    boolean hasSuggestions = networkSuggestions != null;
+    boolean removed = true;
     if (networkSuggestions != null) {
-      final int networksRemoved = wifiManager.removeNetworkSuggestions(networkSuggestions);
+      removed =
+          wifiManager.removeNetworkSuggestions(networkSuggestions)
+              == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS;
       networkSuggestions = null;
-      return networksRemoved == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS;
     }
-    Log.e(TAG, "Can't disconnect from WiFi, networkCallback and networkSuggestions is null.");
-    return false;
+    if (!suggestionsToRemoveOnClose.isEmpty()) {
+      wifiManager.removeNetworkSuggestions(suggestionsToRemoveOnClose);
+      suggestionsToRemoveOnClose.clear();
+    }
+
+    if (!hasCallback && !hasSuggestions) {
+      Log.e(TAG, "Can't disconnect from WiFi, no active callback/suggestions.");
+      return false;
+    }
+    return hasCallback || removed;
   }
 
   @Override
@@ -309,20 +337,31 @@ public final class ModernWifiPlatform implements WifiPlatform {
 
   @Override
   public void close() {
-    if (networkCallback != null) {
-      try {
-        connectivityManager.unregisterNetworkCallback(networkCallback);
-      } catch (IllegalArgumentException ignored) {
-        // already unregistered
-      }
-      networkCallback = null;
-    }
+    connectivityManager.bindProcessToNetwork(null);
     joinedNetwork = null;
-    networkSuggestions = null;
+
+    unregisterNetwork(networkCallback);
+    networkCallback = null;
+
+    if (networkSuggestions != null) {
+      wifiManager.removeNetworkSuggestions(networkSuggestions);
+      networkSuggestions = null;
+    }
 
     if (!suggestionsToRemoveOnClose.isEmpty()) {
       wifiManager.removeNetworkSuggestions(suggestionsToRemoveOnClose);
       suggestionsToRemoveOnClose.clear();
+    }
+  }
+
+  private void unregisterNetwork(@Nullable ConnectivityManager.NetworkCallback callback) {
+    if (callback == null) {
+      return;
+    }
+    try {
+      connectivityManager.unregisterNetworkCallback(callback);
+    } catch (IllegalArgumentException ignored) {
+      // already unregistered
     }
   }
 
