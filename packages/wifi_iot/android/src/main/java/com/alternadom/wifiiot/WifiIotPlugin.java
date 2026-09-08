@@ -8,35 +8,26 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
-import android.net.LinkAddress;
-import android.net.LinkProperties;
-import android.net.MacAddress;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
-import android.net.TransportInfo;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SoftApConfiguration;
-import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
-import android.net.wifi.WifiNetworkSpecifier;
 import android.net.wifi.WifiNetworkSuggestion;
 import android.net.wifi.WifiSsid;
 import android.os.Build;
-import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
 import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.annotation.RequiresApi;
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.util.ArrayList;
-import java.util.List;
+import com.alternadom.wifiiot.wifi.WifiConnectCallback;
+import com.alternadom.wifiiot.wifi.WifiConnectRequest;
+import com.alternadom.wifiiot.wifi.WifiPlatform;
 import info.whitebyte.hotspotmanager.ClientScanResult;
 import info.whitebyte.hotspotmanager.FinishScanListener;
 import info.whitebyte.hotspotmanager.WIFI_AP_STATE;
@@ -56,19 +47,18 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** WifiIotPlugin */
+/** WifiIotPlugin — Flutter binding; STA logic in {@link WifiPlatform} (legacy / modern). */
+@SuppressWarnings("deprecation") // API < 29 SoftAp / WifiConfiguration
 public class WifiIotPlugin
     implements FlutterPlugin,
         ActivityAware,
         MethodCallHandler,
         EventChannel.StreamHandler,
         PluginRegistry.RequestPermissionsResultListener {
-  /// This local reference serves to register the plugin with the Flutter Engine and unregister it
-  /// when the Flutter Engine is detached from the Activity
+
   private MethodChannel channel;
   private EventChannel eventChannel;
 
-  private Network joinedNetwork;
   private WifiManager moWiFi;
   private Context moContext;
   private WifiApManager moWiFiAPManager;
@@ -76,12 +66,9 @@ public class WifiIotPlugin
   private BroadcastReceiver receiver;
   private WifiManager.LocalOnlyHotspotReservation apReservation;
   private WIFI_AP_STATE localOnlyHotspotState = WIFI_AP_STATE.WIFI_AP_STATE_DISABLED;
-  private ConnectivityManager.NetworkCallback networkCallback;
-  private List<WifiNetworkSuggestion> networkSuggestions;
-  private List<String> ssidsToBeRemovedOnExit = new ArrayList<String>();
-  private List<WifiNetworkSuggestion> suggestionsToBeRemovedOnExit = new ArrayList<>();
 
-  // Permission request management
+  private WifiPlatform wifiPlatform;
+
   private boolean requestingPermission = false;
   private Result permissionRequestResultCallback = null;
   private ArrayList<Object> permissionRequestCookie = new ArrayList<>();
@@ -91,88 +78,76 @@ public class WifiIotPlugin
       65655437;
   private static final int PERMISSIONS_REQUEST_CODE_ACCESS_NETWORK_STATE_IS_CONNECTED = 65655438;
 
-  // initialize members of this class with Context
   private void initWithContext(Context context) {
     moContext = context;
     moWiFi = (WifiManager) moContext.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
     moWiFiAPManager = new WifiApManager(moContext.getApplicationContext());
+    ConnectivityManager connectivityManager =
+        (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+    wifiPlatform = WifiPlatform.create(moContext, moWiFi, connectivityManager);
   }
 
-  // initialize members of this class with Activity
   private void initWithActivity(Activity activity) {
     moActivity = activity;
   }
 
-  // cleanup
   private void cleanup() {
-    if (!ssidsToBeRemovedOnExit.isEmpty()) {
-      List<WifiConfiguration> wifiConfigList = moWiFi.getConfiguredNetworks();
-      for (String ssid : ssidsToBeRemovedOnExit) {
-        for (WifiConfiguration wifiConfig : wifiConfigList) {
-          if (wifiConfig.SSID.equals(ssid)) {
-            moWiFi.removeNetwork(wifiConfig.networkId);
-          }
-        }
-      }
+    unregisterScanReceiver();
+    if (apReservation != null) {
+      apReservation.close();
+      apReservation = null;
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !suggestionsToBeRemovedOnExit.isEmpty()) {
-      moWiFi.removeNetworkSuggestions(suggestionsToBeRemovedOnExit);
+    if (wifiPlatform != null) {
+      wifiPlatform.close();
     }
-    // setting all members to null to avoid memory leaks
+    permissionRequestResultCallback = null;
+    permissionRequestCookie.clear();
+    requestingPermission = false;
     channel = null;
     eventChannel = null;
     moActivity = null;
     moContext = null;
     moWiFi = null;
     moWiFiAPManager = null;
+    wifiPlatform = null;
   }
 
   @Override
   public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
-    // initialize method and event channel and set handlers
     channel = new MethodChannel(binding.getBinaryMessenger(), "wifi_iot");
     eventChannel =
         new EventChannel(binding.getBinaryMessenger(), "plugins.wififlutter.io/wifi_scan");
     channel.setMethodCallHandler(this);
     eventChannel.setStreamHandler(this);
-
-    // initializeWithContext
     initWithContext(binding.getApplicationContext());
   }
 
   @Override
   public void onDetachedFromEngine(@NonNull FlutterPluginBinding binding) {
-    // set null as channel handlers
     channel.setMethodCallHandler(null);
     eventChannel.setStreamHandler(null);
-
-    // set member to null
     cleanup();
   }
 
   @Override
   public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
-    // init with activity
     initWithActivity(binding.getActivity());
     binding.addRequestPermissionsResultListener(this);
   }
 
   @Override
   public void onDetachedFromActivityForConfigChanges() {
-    // set activity to null
     moActivity = null;
   }
 
   @Override
   public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) {
-    // init with activity
     initWithActivity(binding.getActivity());
     binding.addRequestPermissionsResultListener(this);
   }
 
   @Override
   public void onDetachedFromActivity() {
-    // set activity to null
     moActivity = null;
   }
 
@@ -322,11 +297,6 @@ public class WifiIotPlugin
     }
   }
 
-  /**
-   * The network's SSID. Can either be an ASCII string, which must be enclosed in double quotation
-   * marks (e.g., {@code "MyNetwork"}), or a string of hex digits, which are not enclosed in quotes
-   * (e.g., {@code 01a243f405}).
-   */
   private void getWiFiAPSSID(Result poResult) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       android.net.wifi.WifiConfiguration oWiFiConfig = moWiFiAPManager.getWifiApConfiguration();
@@ -365,11 +335,8 @@ public class WifiIotPlugin
 
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       android.net.wifi.WifiConfiguration oWiFiConfig = moWiFiAPManager.getWifiApConfiguration();
-
       oWiFiConfig.SSID = sAPSSID;
-
       moWiFiAPManager.setWifiApConfiguration(oWiFiConfig);
-
       poResult.success(null);
     } else {
       poResult.error(
@@ -379,10 +346,6 @@ public class WifiIotPlugin
     }
   }
 
-  /**
-   * This is a network that does not broadcast its SSID, so an SSID-specific probe request must be
-   * used for scans.
-   */
   private void isSSIDHidden(Result poResult) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       android.net.wifi.WifiConfiguration oWiFiConfig = moWiFiAPManager.getWifiApConfiguration();
@@ -419,13 +382,9 @@ public class WifiIotPlugin
   private void setSSIDHidden(MethodCall poCall, Result poResult) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       boolean isSSIDHidden = poCall.argument("hidden");
-
       android.net.wifi.WifiConfiguration oWiFiConfig = moWiFiAPManager.getWifiApConfiguration();
-
       oWiFiConfig.hiddenSSID = isSSIDHidden;
-
       moWiFiAPManager.setWifiApConfiguration(oWiFiConfig);
-
       poResult.success(null);
     } else {
       poResult.error(
@@ -435,13 +394,6 @@ public class WifiIotPlugin
     }
   }
 
-  /**
-   * Pre-shared key for use with WPA-PSK. Either an ASCII string enclosed in double quotation marks
-   * (e.g., {@code "abcdefghij"} for PSK passphrase or a string of 64 hex digits for raw PSK.
-   *
-   * <p>When the value of this key is read, the actual key is not returned, just a "*" if the key
-   * has a value, or the null string otherwise.
-   */
   private void getWiFiAPPreSharedKey(Result poResult) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       android.net.wifi.WifiConfiguration oWiFiConfig = moWiFiAPManager.getWifiApConfiguration();
@@ -478,13 +430,9 @@ public class WifiIotPlugin
   private void setWiFiAPPreSharedKey(MethodCall poCall, Result poResult) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
       String sPreSharedKey = poCall.argument("preSharedKey");
-
       android.net.wifi.WifiConfiguration oWiFiConfig = moWiFiAPManager.getWifiApConfiguration();
-
       oWiFiConfig.preSharedKey = sPreSharedKey;
-
       moWiFiAPManager.setWifiApConfiguration(oWiFiConfig);
-
       poResult.success(null);
     } else {
       poResult.error(
@@ -494,12 +442,6 @@ public class WifiIotPlugin
     }
   }
 
-  /**
-   * Gets a list of the clients connected to the Hotspot *** getClientList : param onlyReachables
-   * {@code false} if the list should contain unreachable (probably disconnected) clients, {@code
-   * true} otherwise param reachableTimeout Reachable Timout in miliseconds, 300 is default param
-   * finishListener, Interface called when the scan method finishes
-   */
   private void getClientList(MethodCall poCall, final Result poResult) {
     Boolean onlyReachables = false;
     if (poCall.argument("onlyReachables") != null) {
@@ -555,12 +497,7 @@ public class WifiIotPlugin
     }
   }
 
-  /**
-   * Return whether Wi-Fi AP is enabled or disabled. *** isWifiApEnabled : return {@code true} if
-   * Wi-Fi AP is enabled
-   */
   private void isWiFiAPEnabled(Result poResult) {
-
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
       try {
         poResult.success(moWiFiAPManager.isWifiApEnabled());
@@ -573,17 +510,9 @@ public class WifiIotPlugin
     }
   }
 
-  /**
-   * Start AccessPoint mode with the specified configuration. If the radio is already running in AP
-   * mode, update the new configuration Note that starting in access point mode disables station
-   * mode operation *** setWifiApEnabled : param wifiConfig SSID, security and channel details as
-   * part of WifiConfiguration return {@code true} if the operation succeeds, {@code false}
-   * otherwise
-   */
   private void setWiFiAPEnabled(MethodCall poCall, final Result poResult) {
     boolean enabled = poCall.argument("state");
 
-    /** Using LocalOnlyHotspotCallback when setting WiFi AP state on API level >= 29 */
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
       final boolean result = moWiFiAPManager.setWifiApEnabled(null, enabled);
       poResult.success(result);
@@ -642,19 +571,12 @@ public class WifiIotPlugin
     }
   }
 
-  /**
-   * Show write permission settings page to user Depending on Android version and application these
-   * may be needed to perform certain WiFi configurations that require WRITE_SETTINGS which require
-   * a double opt-in, not just presence in manifest. *** showWritePermissionSettings : param boolean
-   * force, if true shows always, if false only if permissions are not already granted
-   */
   private void showWritePermissionSettings(MethodCall poCall, Result poResult) {
     boolean force = poCall.argument("force");
     moWiFiAPManager.showWritePermissionSettings(force);
     poResult.success(null);
   }
 
-  /** Gets the Wi-Fi enabled state. *** getWifiApState : return {link WIFI_AP_STATE} */
   private void getWiFiAPState(Result poResult) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
       poResult.success(moWiFiAPManager.getWifiApState().ordinal());
@@ -677,34 +599,42 @@ public class WifiIotPlugin
       moActivity.requestPermissions(
           new String[] {Manifest.permission.ACCESS_FINE_LOCATION},
           PERMISSIONS_REQUEST_CODE_ACCESS_FINE_LOCATION_ON_LISTEN);
-      // actual call will be handled in [onRequestPermissionsResult]
     } else {
       _onListen(eventSink);
     }
   }
 
   private void _onListen(EventChannel.EventSink eventSink) {
+    unregisterScanReceiver();
     receiver = createReceiver(eventSink);
-    registerScanResultsReceiver(receiver);
+    IntentFilter filter = new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
+    registerScanResultsReceiver(receiver, filter);
   }
 
-  @SuppressWarnings("deprecation")
-  private void registerScanResultsReceiver(BroadcastReceiver broadcastReceiver) {
-    IntentFilter filter = new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      // API 33+
+  @SuppressWarnings("deprecation") // API < 33
+  private void registerScanResultsReceiver(BroadcastReceiver broadcastReceiver, IntentFilter filter) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // API 33+
       moContext.registerReceiver(broadcastReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
     } else {
       moContext.registerReceiver(broadcastReceiver, filter);
     }
   }
 
+  private void unregisterScanReceiver() {
+    if (receiver == null || moContext == null) {
+      return;
+    }
+    try {
+      moContext.unregisterReceiver(receiver);
+    } catch (IllegalArgumentException ignored) {
+      // already unregistered
+    }
+    receiver = null;
+  }
+
   @Override
   public void onCancel(Object o) {
-    if (receiver != null) {
-      moContext.unregisterReceiver(receiver);
-      receiver = null;
-    }
+    unregisterScanReceiver();
   }
 
   private BroadcastReceiver createReceiver(final EventChannel.EventSink eventSink) {
@@ -725,7 +655,6 @@ public class WifiIotPlugin
         JSONObject wifiObject = new JSONObject();
         String ssid = ssidFromScanResult(result);
         if (ssid != null && !ssid.isEmpty()) {
-
           wifiObject.put("SSID", ssid);
           wifiObject.put("BSSID", result.BSSID);
           wifiObject.put("capabilities", result.capabilities);
@@ -736,13 +665,6 @@ public class WifiIotPlugin
           } else {
             wifiObject.put("timestamp", 0);
           }
-          /// Other fields not added
-          // wifiObject.put("operatorFriendlyName", result.operatorFriendlyName);
-          // wifiObject.put("venueName", result.venueName);
-          // wifiObject.put("centerFreq0", result.centerFreq0);
-          // wifiObject.put("centerFreq1", result.centerFreq1);
-          // wifiObject.put("channelWidth", result.channelWidth);
-
           wifiArray.put(wifiObject);
         }
       }
@@ -753,7 +675,6 @@ public class WifiIotPlugin
     }
   }
 
-  /// Method to load wifi list into string via Callback. Returns a stringified JSONArray
   private void loadWifiList(final Result poResult) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
         && moContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -768,7 +689,6 @@ public class WifiIotPlugin
       moActivity.requestPermissions(
           new String[] {Manifest.permission.ACCESS_FINE_LOCATION},
           PERMISSIONS_REQUEST_CODE_ACCESS_FINE_LOCATION_LOAD_WIFI_LIST);
-      // actual call will be handled in [onRequestPermissionsResult]
     } else {
       _loadWifiList(poResult);
     }
@@ -783,6 +703,7 @@ public class WifiIotPlugin
     }
   }
 
+  @SuppressWarnings("deprecation") // API < 23
   private boolean selectNetwork(final Network network, final ConnectivityManager manager) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
       return manager.bindProcessToNetwork(network);
@@ -804,14 +725,6 @@ public class WifiIotPlugin
         });
   }
 
-  /// Method to force wifi usage if the user needs to send requests via wifi
-  /// if it does not have internet connection. Useful for IoT applications, when
-  /// the app needs to communicate and send requests to a device that have no
-  /// internet connection via wifi.
-
-  /// Receives a boolean to enable forceWifiUsage if true, and disable if false.
-  /// Is important to enable only when communicating with the device via wifi
-  /// and remember to disable it when disconnecting from device.
   private void forceWifiUsage(final MethodCall poCall, final Result poResult) {
     boolean useWifi = poCall.argument("useWifi");
 
@@ -822,15 +735,11 @@ public class WifiIotPlugin
     boolean shouldReply = true;
     if (Build.VERSION.SDK_INT > Build.VERSION_CODES.LOLLIPOP && manager != null) {
       if (useWifi) {
-        // SDK-31 If not previously in a disconnected state, select the joinedNetwork to ensure
-        // the correct network is used for communications, else fallback to network manager network.
-        // https://developer.android.com/about/versions/12/behavior-changes-12#concurrent-connections
+        Network joinedNetwork = wifiPlatform.getJoinedNetwork();
         if (joinedNetwork != null) {
           success = selectNetwork(joinedNetwork, manager);
         } else {
-          NetworkRequest.Builder builder;
-          builder = new NetworkRequest.Builder();
-          /// set the transport type do WIFI
+          NetworkRequest.Builder builder = new NetworkRequest.Builder();
           builder.addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
           shouldReply = false;
           manager.requestNetwork(
@@ -853,22 +762,18 @@ public class WifiIotPlugin
     }
   }
 
-  /// Method to check if wifi is enabled
   private void isEnabled(Result poResult) {
     poResult.success(moWiFi.isWifiEnabled());
   }
 
-  /// Method to connect/disconnect wifi service
+  @SuppressWarnings("deprecation") // API < 29
   private void setEnabled(MethodCall poCall, Result poResult) {
     Boolean enabled = poCall.argument("state");
     Boolean shouldOpenSettings = poCall.argument("shouldOpenSettings");
 
-    // Enable or Disable WiFi programmatically
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
       moWiFi.setWifiEnabled(enabled);
-    }
-    // Whether to open native WiFi settings or not
-    else {
+    } else {
       if (shouldOpenSettings != null) {
         if (shouldOpenSettings) {
           Intent intent = new Intent(Settings.ACTION_WIFI_SETTINGS);
@@ -889,116 +794,66 @@ public class WifiIotPlugin
   private void connect(final MethodCall poCall, final Result poResult) {
     new Thread() {
       public void run() {
-        String ssid = poCall.argument("ssid");
-        String bssid = poCall.argument("bssid");
-        String password = poCall.argument("password");
-        String security = poCall.argument("security");
-        Boolean joinOnce = poCall.argument("join_once");
-        Boolean withInternet = poCall.argument("with_internet");
-        Boolean isHidden = poCall.argument("is_hidden");
-        Integer timeoutInSeconds = poCall.argument("timeout_in_seconds");
-
-        connectTo(
-            poResult,
-            ssid,
-            bssid,
-            password,
-            security,
-            joinOnce,
-            withInternet,
-            isHidden,
-            timeoutInSeconds);
+        WifiConnectRequest request =
+            new WifiConnectRequest(
+                poCall.argument("ssid"),
+                poCall.argument("bssid"),
+                poCall.argument("password"),
+                poCall.argument("security"),
+                poCall.argument("join_once"),
+                poCall.argument("with_internet"),
+                poCall.argument("is_hidden"),
+                poCall.argument("timeout_in_seconds"));
+        connectWithResult(request, poResult);
       }
     }.start();
   }
 
-  /// Transform a string based bssid into a MacAdress.
-  /// Return null in case of error.
-  @RequiresApi(Build.VERSION_CODES.P)
-  private static MacAddress macAddressFromBssid(String bssid) {
-    if (bssid == null) {
-      return null;
-    }
+  private void connectWithResult(WifiConnectRequest request, final Result poResult) {
+    final Handler handler = new Handler(Looper.getMainLooper());
+    wifiPlatform.connect(
+        request,
+        new WifiConnectCallback() {
+          @Override
+          public void onSuccess(final boolean connected) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+              poResult.success(connected);
+            } else {
+              handler.post(() -> poResult.success(connected));
+            }
+          }
 
-    try {
-      return MacAddress.fromString(bssid);
-    } catch (IllegalArgumentException invalidRepresentation) {
-      Log.e(
-          WifiIotPlugin.class.getSimpleName(),
-          "Mac address parsing failed for bssid: " + bssid,
-          invalidRepresentation);
-      return null;
-    }
+          @Override
+          public void onError(final String code, final String message, final Object details) {
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+              poResult.error(code, message, details);
+            } else {
+              handler.post(() -> poResult.error(code, message, details));
+            }
+          }
+        });
   }
 
-  /**
-   * Registers a wifi network in the device wireless networks For API >= 30 uses intent to
-   * permanently store such network in user configuration For API <= 29 uses deprecated functions
-   * that manipulate directly *** registerWifiNetwork : param ssid, SSID to register param password,
-   * passphrase to use param security, security mode (WPA or null) to use return {@code true} if the
-   * operation succeeds, {@code false} otherwise
-   */
   private void registerWifiNetwork(final MethodCall poCall, final Result poResult) {
-    String ssid = poCall.argument("ssid");
-    String bssid = poCall.argument("bssid");
-    String password = poCall.argument("password");
-    String security = poCall.argument("security");
-    Boolean isHidden = poCall.argument("is_hidden");
+    wifiPlatform.registerNetwork(
+        poCall.argument("ssid"),
+        poCall.argument("bssid"),
+        poCall.argument("password"),
+        poCall.argument("security"),
+        poCall.argument("is_hidden"),
+        new WifiPlatform.RegisterCallback() {
+          @Override
+          public void onSuccess() {
+            poResult.success(null);
+          }
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-      final WifiNetworkSuggestion.Builder suggestedNet = new WifiNetworkSuggestion.Builder();
-      suggestedNet.setSsid(ssid);
-      suggestedNet.setIsHiddenSsid(isHidden != null ? isHidden : false);
-      if (bssid != null) {
-        final MacAddress macAddress = macAddressFromBssid(bssid);
-        if (macAddress == null) {
-          poResult.error("Error", "Invalid BSSID representation", "");
-          return;
-        }
-        suggestedNet.setBssid(macAddress);
-      }
-
-      if (security != null && security.toUpperCase().equals("WPA")) {
-        suggestedNet.setWpa2Passphrase(password);
-      } else if (security != null && security.toUpperCase().equals("WEP")) {
-        // WEP is not supported
-        poResult.error(
-            "Error", "WEP is not supported for Android SDK " + Build.VERSION.SDK_INT, "");
-        return;
-      }
-
-      final ArrayList<WifiNetworkSuggestion> suggestionsList =
-          new ArrayList<WifiNetworkSuggestion>();
-      suggestionsList.add(suggestedNet.build());
-
-      Bundle bundle = new Bundle();
-      bundle.putParcelableArrayList(
-          android.provider.Settings.EXTRA_WIFI_NETWORK_LIST, suggestionsList);
-      Intent intent = new Intent(android.provider.Settings.ACTION_WIFI_ADD_NETWORKS);
-      intent.putExtras(bundle);
-      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-      moContext.startActivity(intent);
-
-      poResult.success(null);
-    } else {
-      // Deprecated version
-      android.net.wifi.WifiConfiguration conf =
-          generateConfiguration(ssid, bssid, password, security, isHidden);
-
-      int updateNetwork = registerWifiNetworkDeprecated(conf);
-
-      if (updateNetwork == -1) {
-        poResult.error("Error", "Error updating network configuration", "");
-      } else {
-        poResult.success(null);
-      }
-    }
+          @Override
+          public void onError(String code, String message, Object details) {
+            poResult.error(code, message, details);
+          }
+        });
   }
 
-  /// Send the ssid and password of a Wifi network into this to connect to the network.
-  /// Example:  wifi.findAndConnect(ssid, password);
-  /// After 10 seconds, a post telling you whether you are connected will pop up.
-  /// Callback returns true if ssid is in the range
   private void findAndConnect(final MethodCall poCall, final Result poResult) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
         && moContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
@@ -1015,7 +870,6 @@ public class WifiIotPlugin
       moActivity.requestPermissions(
           new String[] {Manifest.permission.ACCESS_FINE_LOCATION},
           PERMISSIONS_REQUEST_CODE_ACCESS_FINE_LOCATION_FIND_AND_CONNECT);
-      // actual call will be handled in [onRequestPermissionsResult]
     } else {
       _findAndConnect(poCall, poResult);
     }
@@ -1037,42 +891,21 @@ public class WifiIotPlugin
           String resultString = ssidFromScanResult(result);
           if (ssid.equals(resultString)
               && (result.BSSID == null || bssid == null || result.BSSID.equals(bssid))) {
-            security = getSecurityType(result);
+            security = securityTypeFromScanResult(result);
             if (bssid == null) {
               bssid = result.BSSID;
             }
           }
         }
 
-        connectTo(
-            poResult,
-            ssid,
-            bssid,
-            password,
-            security,
-            joinOnce,
-            withInternet,
-            false,
-            timeoutInSeconds);
+        WifiConnectRequest request =
+            new WifiConnectRequest(
+                ssid, bssid, password, security, joinOnce, withInternet, false, timeoutInSeconds);
+        connectWithResult(request, poResult);
       }
     }.start();
   }
 
-  private static String getSecurityType(ScanResult scanResult) {
-    String capabilities = scanResult.capabilities;
-
-    if (capabilities.contains("WPA")
-        || capabilities.contains("WPA2")
-        || capabilities.contains("WPA/WPA2 PSK")) {
-      return "WPA";
-    } else if (capabilities.contains("WEP")) {
-      return "WEP";
-    } else {
-      return null;
-    }
-  }
-
-  /// Use this method to check if the device is currently connected to Wifi.
   private void isConnected(Result poResult) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
       isConnectedDeprecated(poResult);
@@ -1089,7 +922,6 @@ public class WifiIotPlugin
         moActivity.requestPermissions(
             new String[] {Manifest.permission.ACCESS_NETWORK_STATE},
             PERMISSIONS_REQUEST_CODE_ACCESS_NETWORK_STATE_IS_CONNECTED);
-        // actual call will be handled in [onRequestPermissionsResult]
       } else {
         _isConnected(poResult);
       }
@@ -1101,8 +933,6 @@ public class WifiIotPlugin
         (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
     boolean result = false;
     if (connManager != null) {
-      // `connManager.getActiveNetwork` only return if the network has internet
-      // therefore using `connManager.getAllNetworks()` to check all networks
       for (final Network network : connManager.getAllNetworks()) {
         final NetworkCapabilities capabilities =
             network != null ? connManager.getNetworkCapabilities(network) : null;
@@ -1118,7 +948,7 @@ public class WifiIotPlugin
     poResult.success(result);
   }
 
-  @SuppressWarnings("deprecation")
+  @SuppressWarnings("deprecation") // API < 23
   private void isConnectedDeprecated(Result poResult) {
     ConnectivityManager connManager =
         (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -1128,57 +958,17 @@ public class WifiIotPlugin
     poResult.success(mWifi != null && mWifi.isConnected());
   }
 
-  /// Disconnect current Wifi.
   private void disconnect(Result poResult) {
-    boolean disconnected = false;
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-      //noinspection deprecation
-      disconnected = moWiFi.disconnect();
-    } else {
-      if (networkCallback != null) {
-        final ConnectivityManager connectivityManager =
-            (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-        connectivityManager.unregisterNetworkCallback(networkCallback);
-        networkCallback = null;
-        disconnected = true;
-        joinedNetwork = null;
-      } else if (networkSuggestions != null) {
-        final int networksRemoved = moWiFi.removeNetworkSuggestions(networkSuggestions);
-        disconnected = networksRemoved == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS;
-      } else {
-        Log.e(
-            WifiIotPlugin.class.getSimpleName(),
-            "Can't disconnect from WiFi, networkCallback and networkSuggestions is null.");
-      }
-    }
-    poResult.success(disconnected);
+    poResult.success(wifiPlatform.disconnect());
   }
 
-  /// This method will return current ssid
   private void getSSID(Result poResult) {
-    WifiInfo info = getCurrentWifiInfo();
-
-    // This value should be wrapped in double quotes, so we need to unwrap it.
-    String ssid = info.getSSID();
-    if (ssid != null && ssid.startsWith("\"") && ssid.endsWith("\"")) {
-      ssid = ssid.substring(1, ssid.length() - 1);
-    }
-
-    // Android returns this sentinel when the SSID is not readable (permissions / OEM).
-    if (ssid == null || ssid.equals("<unknown ssid>") || ssid.equals("0x")) {
-      poResult.success(null);
-      return;
-    }
-
-    poResult.success(ssid);
+    poResult.success(wifiPlatform.getSsid());
   }
 
-  /// This method will return the basic service set identifier (BSSID) of the current access point
   private void getBSSID(Result poResult) {
-    WifiInfo info = getCurrentWifiInfo();
-
+    WifiInfo info = wifiPlatform.getWifiInfo();
     String bssid = info.getBSSID();
-
     try {
       poResult.success(bssid != null ? bssid.toUpperCase() : null);
     } catch (Exception e) {
@@ -1186,28 +976,24 @@ public class WifiIotPlugin
     }
   }
 
-  /// This method will return current WiFi signal strength
   private void getCurrentSignalStrength(Result poResult) {
-    poResult.success(getCurrentWifiInfo().getRssi());
+    poResult.success(wifiPlatform.getWifiInfo().getRssi());
   }
 
-  /// This method will return current WiFi frequency
   private void getFrequency(Result poResult) {
-    WifiInfo info = getCurrentWifiInfo();
+    WifiInfo info = wifiPlatform.getWifiInfo();
     int frequency = 0;
-    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
       frequency = info.getFrequency();
     }
     poResult.success(frequency);
   }
 
-  /// This method will return current IP
   private void getIP(Result poResult) {
-    String stringip = getCurrentWifiIpv4();
-    poResult.success(stringip);
+    poResult.success(wifiPlatform.getIpv4());
   }
 
-  /// This method will remove the WiFi network as per the passed SSID from the device list
+  @SuppressWarnings("deprecation") // API < 29
   private void removeWifiNetwork(MethodCall poCall, Result poResult) {
     String prefix_ssid = poCall.argument("ssid");
     if (prefix_ssid.equals("")) {
@@ -1216,9 +1002,9 @@ public class WifiIotPlugin
     boolean removed = false;
 
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-      List<android.net.wifi.WifiConfiguration> mWifiConfigList = moWiFi.getConfiguredNetworks();
-      for (android.net.wifi.WifiConfiguration wifiConfig : mWifiConfigList) {
-        String comparableSSID = ('"' + prefix_ssid); // Add quotes because wifiConfig.SSID has them
+      List<WifiConfiguration> mWifiConfigList = moWiFi.getConfiguredNetworks();
+      for (WifiConfiguration wifiConfig : mWifiConfigList) {
+        String comparableSSID = ('"' + prefix_ssid);
         if (wifiConfig.SSID.startsWith(comparableSSID)) {
           moWiFi.removeNetwork(wifiConfig.networkId);
           moWiFi.saveConfiguration();
@@ -1228,10 +1014,9 @@ public class WifiIotPlugin
       }
     }
 
-    // remove network suggestion
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
       List<WifiNetworkSuggestion> suggestions = moWiFi.getNetworkSuggestions();
-      List<WifiNetworkSuggestion> removeSuggestions = new ArrayList<WifiNetworkSuggestion>();
+      List<WifiNetworkSuggestion> removeSuggestions = new ArrayList<>();
       for (int i = 0, suggestionsSize = suggestions.size(); i < suggestionsSize; i++) {
         WifiNetworkSuggestion suggestion = suggestions.get(i);
         if (suggestion.getSsid().startsWith(prefix_ssid)) {
@@ -1244,15 +1029,13 @@ public class WifiIotPlugin
     poResult.success(removed);
   }
 
-  /// This method will remove the WiFi network as per the passed SSID from the device list
+  @SuppressWarnings("deprecation") // API < 29
   private void isRegisteredWifiNetwork(MethodCall poCall, Result poResult) {
-
     String ssid = poCall.argument("ssid");
-
-    List<android.net.wifi.WifiConfiguration> mWifiConfigList = moWiFi.getConfiguredNetworks();
-    String comparableSSID = ('"' + ssid + '"'); // Add quotes because wifiConfig.SSID has them
+    List<WifiConfiguration> mWifiConfigList = moWiFi.getConfiguredNetworks();
+    String comparableSSID = ('"' + ssid + '"');
     if (mWifiConfigList != null) {
-      for (android.net.wifi.WifiConfiguration wifiConfig : mWifiConfigList) {
+      for (WifiConfiguration wifiConfig : mWifiConfigList) {
         if (wifiConfig.SSID.equals(comparableSSID)) {
           poResult.success(true);
           return;
@@ -1262,456 +1045,11 @@ public class WifiIotPlugin
     poResult.success(false);
   }
 
-  private static String longToIP(int longIp) {
-    StringBuilder sb = new StringBuilder("");
-    String[] strip = new String[4];
-    strip[3] = String.valueOf((longIp >>> 24));
-    strip[2] = String.valueOf((longIp & 0x00FFFFFF) >>> 16);
-    strip[1] = String.valueOf((longIp & 0x0000FFFF) >>> 8);
-    strip[0] = String.valueOf((longIp & 0x000000FF));
-    sb.append(strip[0]);
-    sb.append(".");
-    sb.append(strip[1]);
-    sb.append(".");
-    sb.append(strip[2]);
-    sb.append(".");
-    sb.append(strip[3]);
-    return sb.toString();
-  }
-
-  /// Method to connect to WIFI Network
-  private void connectTo(
-      final Result poResult,
-      final String ssid,
-      final String bssid,
-      final String password,
-      final String security,
-      final Boolean joinOnce,
-      final Boolean withInternet,
-      final Boolean isHidden,
-      final Integer timeoutInSeconds) {
-    final Handler handler = new Handler(Looper.getMainLooper());
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-      final boolean connected =
-          connectToDeprecated(ssid, bssid, password, security, joinOnce, isHidden);
-      handler.post(
-          new Runnable() {
-            @Override
-            public void run() {
-              poResult.success(connected);
-            }
-          });
-    } else {
-      // error if WEP security, since not supported
-      if (security != null && security.toUpperCase().equals("WEP")) {
-        handler.post(
-            new Runnable() {
-              @Override
-              public void run() {
-                poResult.error(
-                    "Error", "WEP is not supported for Android SDK " + Build.VERSION.SDK_INT, "");
-              }
-            });
-        return;
-      }
-
-      if (withInternet != null && withInternet) {
-        // create network suggestion
-        final WifiNetworkSuggestion.Builder builder = new WifiNetworkSuggestion.Builder();
-        // set ssid
-        builder.setSsid(ssid);
-        builder.setIsHiddenSsid(isHidden != null ? isHidden : false);
-        if (bssid != null) {
-          final MacAddress macAddress = macAddressFromBssid(bssid);
-          if (macAddress == null) {
-            handler.post(
-                new Runnable() {
-                  @Override
-                  public void run() {
-                    poResult.error("Error", "Invalid BSSID representation", "");
-                  }
-                });
-            return;
-          }
-          builder.setBssid(macAddress);
-        }
-
-        // set password
-        if (security != null && security.toUpperCase().equals("WPA")) {
-          builder.setWpa2Passphrase(password);
-        }
-
-        // remove suggestions if already existing
-        if (networkSuggestions != null) {
-          moWiFi.removeNetworkSuggestions(networkSuggestions);
-        }
-
-        // builder.setIsAppInteractionRequired(true);
-        final WifiNetworkSuggestion suggestion = builder.build();
-
-        networkSuggestions = new ArrayList<>();
-        networkSuggestions.add(suggestion);
-        if (joinOnce != null && joinOnce) {
-          suggestionsToBeRemovedOnExit.add(suggestion);
-        }
-
-        final int status = moWiFi.addNetworkSuggestions(networkSuggestions);
-        Log.e(WifiIotPlugin.class.getSimpleName(), "status: " + status);
-
-        handler.post(
-            new Runnable() {
-              @Override
-              public void run() {
-                poResult.success(status == WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS);
-              }
-            });
-      } else {
-        // Make new network specifier
-        final WifiNetworkSpecifier.Builder builder = new WifiNetworkSpecifier.Builder();
-        // set ssid
-        builder.setSsid(ssid);
-        builder.setIsHiddenSsid(isHidden != null ? isHidden : false);
-        if (bssid != null) {
-          final MacAddress macAddress = macAddressFromBssid(bssid);
-          if (macAddress == null) {
-            handler.post(
-                new Runnable() {
-                  @Override
-                  public void run() {
-                    poResult.error("Error", "Invalid BSSID representation", "");
-                  }
-                });
-            return;
-          }
-          builder.setBssid(macAddress);
-        }
-
-        // set security
-        if (security != null && security.toUpperCase().equals("WPA")) {
-          builder.setWpa2Passphrase(password);
-        }
-
-        final NetworkRequest networkRequest =
-            new NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .setNetworkSpecifier(builder.build())
-                .build();
-
-        final ConnectivityManager connectivityManager =
-            (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-
-        if (networkCallback != null) connectivityManager.unregisterNetworkCallback(networkCallback);
-
-        networkCallback =
-            new ConnectivityManager.NetworkCallback() {
-              boolean resultSent = false;
-
-              @Override
-              public void onAvailable(@NonNull Network network) {
-                super.onAvailable(network);
-                if (!resultSent) {
-                  joinedNetwork = network;
-                  poResult.success(true);
-                  resultSent = true;
-                }
-              }
-
-              @Override
-              public void onUnavailable() {
-                super.onUnavailable();
-                if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
-                  connectivityManager.unregisterNetworkCallback(this);
-                }
-                if (!resultSent) {
-                  poResult.success(false);
-                  resultSent = true;
-                }
-              }
-
-              @Override
-              public void onLost(Network network) {
-                super.onLost(network);
-                if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
-                  connectivityManager.unregisterNetworkCallback(this);
-                }
-              }
-            };
-
-        connectivityManager.requestNetwork(
-            networkRequest, networkCallback, handler, timeoutInSeconds * 1000);
-      }
-    }
-  }
-
-  @SuppressWarnings("deprecation")
-  private int registerWifiNetworkDeprecated(android.net.wifi.WifiConfiguration conf) {
-    int updateNetwork = -1;
-    int registeredNetwork = -1;
-
-    /// Remove the existing configuration for this netwrok
-    List<android.net.wifi.WifiConfiguration> mWifiConfigList = moWiFi.getConfiguredNetworks();
-
-    if (mWifiConfigList != null) {
-      for (android.net.wifi.WifiConfiguration wifiConfig : mWifiConfigList) {
-        if (wifiConfig.SSID.equals(conf.SSID)
-            && (wifiConfig.BSSID == null
-                || conf.BSSID == null
-                || wifiConfig.BSSID.equals(conf.BSSID))) {
-          conf.networkId = wifiConfig.networkId;
-          registeredNetwork = wifiConfig.networkId;
-          updateNetwork = moWiFi.updateNetwork(conf);
-        }
-      }
-    }
-
-    /// If network not already in configured networks add new network
-    if (updateNetwork == -1) {
-      updateNetwork = moWiFi.addNetwork(conf);
-      moWiFi.saveConfiguration();
-    }
-
-    // Try returning last known valid network id
-    if (updateNetwork == -1) {
-      return registeredNetwork;
-    }
-
-    return updateNetwork;
-  }
-
-  private android.net.wifi.WifiConfiguration generateConfiguration(
-      String ssid, String bssid, String password, String security, Boolean isHidden) {
-    android.net.wifi.WifiConfiguration conf = new android.net.wifi.WifiConfiguration();
-    conf.SSID = "\"" + ssid + "\"";
-    conf.hiddenSSID = isHidden != null ? isHidden : false;
-    if (bssid != null) {
-      conf.BSSID = bssid;
-    }
-
-    if (security != null) security = security.toUpperCase();
-    else security = "NONE";
-
-    if (security.toUpperCase().equals("WPA")) {
-
-      /// appropriate ciper is need to set according to security type used,
-      /// ifcase of not added it will not be able to connect
-      conf.preSharedKey = "\"" + password + "\"";
-
-      conf.allowedProtocols.set(android.net.wifi.WifiConfiguration.Protocol.RSN);
-
-      conf.allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.WPA_PSK);
-
-      conf.status = android.net.wifi.WifiConfiguration.Status.ENABLED;
-
-      conf.allowedGroupCiphers.set(android.net.wifi.WifiConfiguration.GroupCipher.TKIP);
-      conf.allowedGroupCiphers.set(android.net.wifi.WifiConfiguration.GroupCipher.CCMP);
-
-      conf.allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.WPA_PSK);
-
-      conf.allowedPairwiseCiphers.set(android.net.wifi.WifiConfiguration.PairwiseCipher.TKIP);
-      conf.allowedPairwiseCiphers.set(android.net.wifi.WifiConfiguration.PairwiseCipher.CCMP);
-
-      conf.allowedProtocols.set(android.net.wifi.WifiConfiguration.Protocol.RSN);
-      conf.allowedProtocols.set(android.net.wifi.WifiConfiguration.Protocol.WPA);
-    } else if (security.equals("WEP")) {
-      conf.wepKeys[0] = "\"" + password + "\"";
-      conf.wepTxKeyIndex = 0;
-      conf.allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE);
-      conf.allowedGroupCiphers.set(android.net.wifi.WifiConfiguration.GroupCipher.WEP40);
-    } else {
-      conf.allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE);
-    }
-
-    return conf;
-  }
-
-  @SuppressWarnings("deprecation")
-  private Boolean connectToDeprecated(
-      String ssid,
-      String bssid,
-      String password,
-      String security,
-      Boolean joinOnce,
-      Boolean isHidden) {
-    /// Make new configuration
-    android.net.wifi.WifiConfiguration conf =
-        generateConfiguration(ssid, bssid, password, security, isHidden);
-
-    int updateNetwork = registerWifiNetworkDeprecated(conf);
-
-    if (updateNetwork == -1) {
-      return false;
-    }
-
-    if (joinOnce != null && joinOnce.booleanValue()) {
-      ssidsToBeRemovedOnExit.add(conf.SSID);
-    }
-
-    boolean disconnect = moWiFi.disconnect();
-    if (!disconnect) {
-      return false;
-    }
-
-    boolean enabled = moWiFi.enableNetwork(updateNetwork, true);
-    if (!enabled) return false;
-
-    boolean connected = false;
-    for (int i = 0; i < 20; i++) {
-      WifiInfo currentNet = getCurrentWifiInfo();
-      int networkId = currentNet.getNetworkId();
-      SupplicantState netState = currentNet.getSupplicantState();
-
-      // Wait for connection to reach state completed
-      // to discard false positives like auth error
-      if (networkId != -1 && netState == SupplicantState.COMPLETED) {
-        connected = networkId == updateNetwork;
-        break;
-      }
-      try {
-        Thread.sleep(500);
-      } catch (InterruptedException ignored) {
-        break;
-      }
-    }
-
-    return connected;
-  }
-
-  @NonNull
-  @SuppressWarnings("deprecation")
-  private WifiInfo getCurrentWifiInfo() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      // API 31+
-      WifiInfo wifiInfo = wifiInfoFromConnectivityManager();
-      if (wifiInfo != null) {
-        return wifiInfo;
-      }
-    }
-    return moWiFi.getConnectionInfo();
-  }
-
+  /** API 33+: WifiSsid; API < 33: SSID. */
   @Nullable
-  @RequiresApi(Build.VERSION_CODES.S)
-  private WifiInfo wifiInfoFromConnectivityManager() {
-    ConnectivityManager connectivityManager =
-        (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-    if (connectivityManager == null) {
-      return null;
-    }
-
-    for (Network network : wifiNetworksOrdered(connectivityManager)) {
-      WifiInfo wifiInfo = wifiInfoFromNetwork(connectivityManager, network);
-      if (wifiInfo != null && hasReadableSsid(wifiInfo)) {
-        return wifiInfo;
-      }
-    }
-
-    return null;
-  }
-
-  @RequiresApi(Build.VERSION_CODES.M)
-  private List<Network> wifiNetworksOrdered(ConnectivityManager connectivityManager) {
-    List<Network> ordered = new ArrayList<>();
-    if (joinedNetwork != null) {
-      ordered.add(joinedNetwork);
-    }
-
-    List<Network> activeWifi = new ArrayList<>();
-    List<Network> rest = new ArrayList<>();
-    Network activeNetwork = connectivityManager.getActiveNetwork();
-
-    for (Network network : connectivityManager.getAllNetworks()) {
-      if (joinedNetwork != null && network.equals(joinedNetwork)) {
-        continue;
-      }
-      NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(network);
-      if (capabilities == null || !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-        continue;
-      }
-      if (activeNetwork != null && network.equals(activeNetwork)) {
-        activeWifi.add(network);
-      } else {
-        rest.add(network);
-      }
-    }
-
-    ordered.addAll(activeWifi);
-    ordered.addAll(rest);
-    return ordered;
-  }
-
-  @SuppressWarnings("deprecation")
-  private boolean hasReadableSsid(@NonNull WifiInfo wifiInfo) {
-    String ssid = wifiInfo.getSSID();
-    if (ssid == null) {
-      return false;
-    }
-    if (ssid.startsWith("\"") && ssid.endsWith("\"") && ssid.length() >= 2) {
-      ssid = ssid.substring(1, ssid.length() - 1);
-    }
-    return !ssid.isEmpty() && !ssid.equals("<unknown ssid>") && !ssid.equals("0x");
-  }
-
-  @Nullable
-  @RequiresApi(Build.VERSION_CODES.Q)
-  private WifiInfo wifiInfoFromNetwork(
-      ConnectivityManager connectivityManager, Network network) {
-    NetworkCapabilities capabilities = connectivityManager.getNetworkCapabilities(network);
-    return capabilities != null ? wifiInfoFromCapabilities(capabilities) : null;
-  }
-
-  @Nullable
-  @RequiresApi(Build.VERSION_CODES.Q)
-  private WifiInfo wifiInfoFromCapabilities(NetworkCapabilities capabilities) {
-    TransportInfo transportInfo = capabilities.getTransportInfo();
-    if (transportInfo instanceof WifiInfo) {
-      return (WifiInfo) transportInfo;
-    }
-    return null;
-  }
-
-  @Nullable
-  @SuppressWarnings("deprecation")
-  private String getCurrentWifiIpv4() {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-      // API 31+
-      String ipv4 = ipv4FromLinkProperties();
-      if (ipv4 != null) {
-        return ipv4;
-      }
-    }
-    return longToIP(getCurrentWifiInfo().getIpAddress());
-  }
-
-  @Nullable
-  @RequiresApi(Build.VERSION_CODES.S)
-  private String ipv4FromLinkProperties() {
-    ConnectivityManager connectivityManager =
-        (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-    if (connectivityManager == null) {
-      return null;
-    }
-
-    for (Network wifiNetwork : wifiNetworksOrdered(connectivityManager)) {
-      LinkProperties linkProperties = connectivityManager.getLinkProperties(wifiNetwork);
-      if (linkProperties == null) {
-        continue;
-      }
-      for (LinkAddress linkAddress : linkProperties.getLinkAddresses()) {
-        InetAddress address = linkAddress.getAddress();
-        if (address instanceof Inet4Address) {
-          return address.getHostAddress();
-        }
-      }
-    }
-    return null;
-  }
-
-  @Nullable
-  @SuppressWarnings("deprecation")
+  @SuppressWarnings("deprecation") // API < 33
   private static String ssidFromScanResult(ScanResult result) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-      // API 33+
       WifiSsid wifiSsid = result.getWifiSsid();
       if (wifiSsid == null) {
         return null;
@@ -1723,5 +1061,18 @@ public class WifiIotPlugin
       return ssid;
     }
     return result.SSID;
+  }
+
+  @Nullable
+  private static String securityTypeFromScanResult(ScanResult scanResult) {
+    String capabilities = scanResult.capabilities;
+    if (capabilities.contains("WPA")
+        || capabilities.contains("WPA2")
+        || capabilities.contains("WPA/WPA2 PSK")) {
+      return "WPA";
+    } else if (capabilities.contains("WEP")) {
+      return "WEP";
+    }
+    return null;
   }
 }
