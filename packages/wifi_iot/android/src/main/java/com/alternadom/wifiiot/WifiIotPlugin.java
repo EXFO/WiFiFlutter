@@ -689,6 +689,13 @@ public class WifiIotPlugin
           } else {
             wifiObject.put("timestamp", 0);
           }
+          /// Other fields not added
+          // wifiObject.put("operatorFriendlyName", result.operatorFriendlyName);
+          // wifiObject.put("venueName", result.venueName);
+          // wifiObject.put("centerFreq0", result.centerFreq0);
+          // wifiObject.put("centerFreq1", result.centerFreq1);
+          // wifiObject.put("channelWidth", result.channelWidth);
+
           wifiArray.put(wifiObject);
         }
       }
