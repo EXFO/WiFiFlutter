@@ -1,20 +1,20 @@
-<a href="https://wifi.flutternetwork.dev">
+<a href="https://github.com/flutternetwork/WiFiFlutter">
   <p align="center">  
     <img width="360px" src="logo/logo+name_color.png">
   </p>
 </a>
 
 <p align="center">
-  <a href="https://flutternetwork.dev">
+  <!--<a href="https://flutternetwork.dev">-->
     <img src="https://raw.githubusercontent.com/flutternetwork/.github/master/profile/badge.svg" alt="Flutter Network" />
-  </a>
+  <!--</a>-->
   <a href="https://github.com/flutternetwork/WiFiFlutter/actions?query=workflow%3Aall_plugins">
     <img src="https://github.com/flutternetwork/WiFiFlutter/workflows/all_plugins/badge.svg" alt="all_plugins GitHub Workflow Status"/>
   </a>
   <a href="https://codecov.io/gh/flutternetwork/WiFiFlutter/">
     <img src="https://codecov.io/gh/flutternetwork/WiFiFlutter/graph/badge.svg" alt="all_plugins Coverage"/>
   </a><!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
-<a href="https://github.com/flutternetwork/WiFiFlutter/blob/master/CONTRIBUTORS.md#contributors-"><img src="https://img.shields.io/badge/all_contributors-63-orange.svg" alt="All Contributors" /></a>
+<a href="https://github.com/flutternetwork/WiFiFlutter/blob/master/CONTRIBUTORS.md#contributors-"><img src="https://img.shields.io/badge/all_contributors-65-orange.svg" alt="All Contributors" /></a>
 <!-- ALL-CONTRIBUTORS-BADGE:END -->
   <a href="https://gitter.im/flutternetwork/WiFiFlutter?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge">
     <img src="https://badges.gitter.im/flutternetwork/WiFiFlutter.svg" alt="Join the chat at https://gitter.im/flutternetwork/WiFiFlutter]">
@@ -179,7 +179,7 @@ Thanks goes to [these 💖 people][contributors] for their contributions.
 This project follows the [all-contributors][all_contributors] specification. Contributions of any kind welcome!
 
 <!-- links -->
-[home]: https://wifi.flutternetwork.dev
+[home]: https://github.com/flutternetwork/WiFiFlutter
 [reform]: https://github.com/flutternetwork/WiFiFlutter/discussions/229
 [issue]: https://github.com/flutternetwork/WiFiFlutter/issues/new
 [contrib]: https://github.com/flutternetwork/WiFiFlutter/blob/master/CONTRIBUTING.md

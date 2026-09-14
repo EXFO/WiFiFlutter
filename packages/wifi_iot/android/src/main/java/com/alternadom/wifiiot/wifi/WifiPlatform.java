@@ -9,7 +9,10 @@ import android.os.Build;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-/** STA Wi‑Fi backend: {@link LegacyWifiPlatform} (API &lt; 29) or {@link ModernWifiPlatform} (API 29+). */
+/**
+ * STA Wi‑Fi backend: {@link LegacyWifiPlatform} (API &lt; 29) or {@link ModernWifiPlatform} (API
+ * 29+).
+ */
 public interface WifiPlatform {
   void connect(WifiConnectRequest request, WifiConnectCallback callback);
 

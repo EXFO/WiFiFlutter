@@ -277,8 +277,7 @@ public class WifiIotPlugin
         removeWifiNetwork(poCall, result);
         break;
       case "isRegisteredWifiNetwork":
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q)
-          isRegisteredWifiNetwork(poCall, result);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) isRegisteredWifiNetwork(poCall, result);
         else
           result.error(
               "Error",
@@ -636,7 +635,8 @@ public class WifiIotPlugin
   }
 
   @SuppressWarnings("deprecation") // API < 33
-  private void registerScanResultsReceiver(BroadcastReceiver broadcastReceiver, IntentFilter filter) {
+  private void registerScanResultsReceiver(
+      BroadcastReceiver broadcastReceiver, IntentFilter filter) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // API 33+
       moContext.registerReceiver(broadcastReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
     } else {
@@ -689,13 +689,6 @@ public class WifiIotPlugin
           } else {
             wifiObject.put("timestamp", 0);
           }
-          /// Other fields not added
-          // wifiObject.put("operatorFriendlyName", result.operatorFriendlyName);
-          // wifiObject.put("venueName", result.venueName);
-          // wifiObject.put("centerFreq0", result.centerFreq0);
-          // wifiObject.put("centerFreq1", result.centerFreq1);
-          // wifiObject.put("channelWidth", result.channelWidth);
-
           wifiArray.put(wifiObject);
         }
       }
