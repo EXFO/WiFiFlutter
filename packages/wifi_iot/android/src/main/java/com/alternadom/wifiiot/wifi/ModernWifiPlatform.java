@@ -59,9 +59,7 @@ public final class ModernWifiPlatform implements WifiPlatform {
       handler.post(
           () ->
               callback.onError(
-                  "Error",
-                  "WEP is not supported for Android SDK " + Build.VERSION.SDK_INT,
-                  ""));
+                  "Error", "WEP is not supported for Android SDK " + Build.VERSION.SDK_INT, ""));
       return;
     }
 
@@ -72,8 +70,6 @@ public final class ModernWifiPlatform implements WifiPlatform {
     }
   }
 
-  private void connectWithSuggestion(
-      WifiConnectRequest request, WifiConnectCallback callback, Handler handler) {
   private void connectWithSuggestion(WifiConnectRequest request, WifiConnectCallback callback) {
     final WifiNetworkSuggestion.Builder builder = new WifiNetworkSuggestion.Builder();
     builder.setSsid(request.ssid);
@@ -128,8 +124,7 @@ public final class ModernWifiPlatform implements WifiPlatform {
     networkCallback = null;
 
     Integer timeoutInSeconds = request.timeoutInSeconds;
-    int timeoutMs =
-        timeoutInSeconds != null ? timeoutInSeconds * 1000 : DEFAULT_TIMEOUT_MS;
+    int timeoutMs = timeoutInSeconds != null ? timeoutInSeconds * 1000 : DEFAULT_TIMEOUT_MS;
 
     final AtomicBoolean done = new AtomicBoolean(false);
 
@@ -183,9 +178,7 @@ public final class ModernWifiPlatform implements WifiPlatform {
   }
 
   private boolean applyBssid(
-      WifiNetworkSuggestion.Builder builder,
-      @Nullable String bssid,
-      WifiConnectCallback callback) {
+      WifiNetworkSuggestion.Builder builder, @Nullable String bssid, WifiConnectCallback callback) {
     if (bssid == null) {
       return true;
     }
@@ -199,9 +192,7 @@ public final class ModernWifiPlatform implements WifiPlatform {
   }
 
   private boolean applyBssid(
-      WifiNetworkSpecifier.Builder builder,
-      @Nullable String bssid,
-      WifiConnectCallback callback) {
+      WifiNetworkSpecifier.Builder builder, @Nullable String bssid, WifiConnectCallback callback) {
     if (bssid == null) {
       return true;
     }

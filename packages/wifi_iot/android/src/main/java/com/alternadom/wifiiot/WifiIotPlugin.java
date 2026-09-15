@@ -540,8 +540,8 @@ public class WifiIotPlugin
     boolean enabled = poCall.argument("state");
 
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-      final boolean result = moWiFiAPManager.setWifiApEnabled(null, enabled);
-      result.success(result);
+      final boolean success = moWiFiAPManager.setWifiApEnabled(null, enabled);
+      result.success(success);
     } else {
       if (enabled) {
         localOnlyHotspotState = WIFI_AP_STATE.WIFI_AP_STATE_ENABLING;
@@ -735,13 +735,13 @@ public class WifiIotPlugin
 
   private void onAvailableNetwork(
       final ConnectivityManager manager, final Network network, final Result result) {
-    final boolean result = selectNetwork(network, manager);
+    final boolean success = selectNetwork(network, manager);
     final Handler handler = new Handler(Looper.getMainLooper());
     handler.post(
         new Runnable() {
           @Override
           public void run() {
-            result.success(result);
+            result.success(success);
           }
         });
   }
@@ -949,21 +949,21 @@ public class WifiIotPlugin
   private void _isConnected(Result result) {
     ConnectivityManager connManager =
         (ConnectivityManager) moContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-    boolean result = false;
+    boolean isConnected = false;
     if (connManager != null) {
       for (final Network network : connManager.getAllNetworks()) {
         final NetworkCapabilities capabilities =
             network != null ? connManager.getNetworkCapabilities(network) : null;
-        final boolean isConnected =
+        final boolean hasWifi =
             capabilities != null && capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
-        if (isConnected) {
-          result = true;
+        if (hasWifi) {
+          isConnected = true;
           break;
         }
       }
     }
 
-    result.success(result);
+    result.success(isConnected);
   }
 
   @SuppressWarnings("deprecation") // API < 23

@@ -96,18 +96,14 @@ class WifiScanPlugin :
             }
           }
         }
-        val intentFilter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
-        // API 33+: RECEIVER_NOT_EXPORTED
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(
-                wifiScanReceiver,
-                intentFilter,
-                Context.RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            @Suppress("DEPRECATION") // API < 33
-            context.registerReceiver(wifiScanReceiver, intentFilter)
-        }
+    val intentFilter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
+    // API 33+: RECEIVER_NOT_EXPORTED
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      context.registerReceiver(wifiScanReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
+    } else {
+      @Suppress("DEPRECATION") // API < 33
+      context.registerReceiver(wifiScanReceiver, intentFilter)
+    }
 
     // set Flutter channels - 1 for method, 1 for event
     channel = MethodChannel(flutterPluginBinding.binaryMessenger, "wifi_scan")
@@ -233,33 +229,31 @@ class WifiScanPlugin :
     }
   }
 
-    private fun canStartScan(askPermission: Boolean): Int {
-        val hasLocPerm = hasLocationPermission()
-        val isLocEnabled = isLocationEnabled()
-        return when {
-            // API < 28
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.P -> CAN_START_SCAN_YES
-            // API 29+
-            hasLocPerm && isLocEnabled -> CAN_START_SCAN_YES
-            hasLocPerm -> CAN_START_SCAN_NO_LOC_DISABLED
-            askPermission -> ASK_FOR_LOC_PERM
-            else -> CAN_START_SCAN_NO_LOC_PERM_REQUIRED
-        }
+  private fun canStartScan(askPermission: Boolean): Int {
+    val hasLocPerm = hasLocationPermission()
+    val isLocEnabled = isLocationEnabled()
+    return when {
+      // API < 28
+      Build.VERSION.SDK_INT < Build.VERSION_CODES.P -> CAN_START_SCAN_YES
+      // API 29+
+      hasLocPerm && isLocEnabled -> CAN_START_SCAN_YES
+      hasLocPerm -> CAN_START_SCAN_NO_LOC_DISABLED
+      askPermission -> ASK_FOR_LOC_PERM
+      else -> CAN_START_SCAN_NO_LOC_PERM_REQUIRED
     }
   }
 
-    @Suppress("DEPRECATION") // API 29+ throttled
-    private fun startScan(): Boolean = wifi!!.startScan()
+  @Suppress("DEPRECATION") // API 29+ throttled
+  private fun startScan(): Boolean = wifi!!.startScan()
 
-    private fun canGetScannedResults(askPermission: Boolean): Int {
-        val hasLocPerm = hasLocationPermission()
-        val isLocEnabled = isLocationEnabled()
-        return when {
-            hasLocPerm && isLocEnabled -> CAN_GET_RESULTS_YES
-            hasLocPerm -> CAN_GET_RESULTS_NO_LOC_DISABLED
-            askPermission -> ASK_FOR_LOC_PERM
-            else -> CAN_GET_RESULTS_NO_LOC_PERM_REQUIRED
-        }
+  private fun canGetScannedResults(askPermission: Boolean): Int {
+    val hasLocPerm = hasLocationPermission()
+    val isLocEnabled = isLocationEnabled()
+    return when {
+      hasLocPerm && isLocEnabled -> CAN_GET_RESULTS_YES
+      hasLocPerm -> CAN_GET_RESULTS_NO_LOC_DISABLED
+      askPermission -> ASK_FOR_LOC_PERM
+      else -> CAN_GET_RESULTS_NO_LOC_PERM_REQUIRED
     }
   }
 
@@ -271,41 +265,51 @@ class WifiScanPlugin :
             "capabilities" to ap.capabilities,
             "frequency" to ap.frequency,
             "level" to ap.level,
-            "timestamp" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) ap.timestamp else null,
-            "standard" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ap.wifiStandard else null,
-            "centerFrequency0" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.centerFreq0 else null,
-            "centerFrequency1" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.centerFreq1 else null,
-            "channelWidth" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.channelWidth else null,
-            "isPasspoint" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.isPasspointNetwork else null,
-            "operatorFriendlyName" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                @Suppress("DEPRECATION") // API < 31
-                ap.operatorFriendlyName?.toString()
-            } else null,
-            "venueName" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                @Suppress("DEPRECATION") // API < 31
-                ap.venueName?.toString()
-            } else null,
-            "is80211mcResponder" to if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.is80211mcResponder else null
-        )
-    }
+            "timestamp" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1) ap.timestamp
+                else null,
+            "standard" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) ap.wifiStandard else null,
+            "centerFrequency0" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.centerFreq0 else null,
+            "centerFrequency1" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.centerFreq1 else null,
+            "channelWidth" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.channelWidth else null,
+            "isPasspoint" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.isPasspointNetwork else null,
+            "operatorFriendlyName" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                  @Suppress("DEPRECATION") // API < 31
+                  ap.operatorFriendlyName?.toString()
+                } else null,
+            "venueName" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                  @Suppress("DEPRECATION") // API < 31
+                  ap.venueName?.toString()
+                } else null,
+            "is80211mcResponder" to
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) ap.is80211mcResponder else null)
+      }
 
-    /** API 33+: wifiSsid; API < 33: SSID. */
-    private fun ssidFromScanResult(ap: android.net.wifi.ScanResult): String? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val wifiSsid = ap.wifiSsid ?: return null
-            return wifiSsid.toString().trim('"')
-        }
-        @Suppress("DEPRECATION") // API < 33
-        return ap.SSID
+  /** API 33+: wifiSsid; API < 33: SSID. */
+  private fun ssidFromScanResult(ap: android.net.wifi.ScanResult): String? {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      val wifiSsid = ap.wifiSsid ?: return null
+      return wifiSsid.toString().trim('"')
     }
+    @Suppress("DEPRECATION") // API < 33
+    return ap.SSID
+  }
 
-    private fun onScannedResultsAvailable() {
-        eventSink?.success(getScannedResults())
-    }
+  private fun onScannedResultsAvailable() {
+    eventSink?.success(getScannedResults())
+  }
 
-    /** API 29+ and targetSdk 29+: fine location required. */
-    private fun requiresFineLocation(): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && context.applicationInfo.targetSdkVersion >= Build.VERSION_CODES.Q
+  /** API 29+ and targetSdk 29+: fine location required. */
+  private fun requiresFineLocation(): Boolean =
+      Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+          context.applicationInfo.targetSdkVersion >= Build.VERSION_CODES.Q
 
   private fun hasLocationPermission(): Boolean {
     val permissions =
@@ -325,33 +329,31 @@ class WifiScanPlugin :
     ERROR_NO_ACTIVITY
   }
 
-    private fun askForLocationPermission(callback: (AskLocPermResult) -> Unit) {
-        if (activity == null) return callback.invoke(AskLocPermResult.ERROR_NO_ACTIVITY)
-        val requiresFine = requiresFineLocation()
-        // API > 30: ask FINE + COARSE together
-        val requiresFineButAskBoth = requiresFine && Build.VERSION.SDK_INT > Build.VERSION_CODES.R
-        val permissions = when {
-            requiresFineButAskBoth -> locationPermissionBoth
-            requiresFine -> locationPermissionFine
-            else -> locationPermissionCoarse
+  private fun askForLocationPermission(callback: (AskLocPermResult) -> Unit) {
+    if (activity == null) return callback.invoke(AskLocPermResult.ERROR_NO_ACTIVITY)
+    val requiresFine = requiresFineLocation()
+    // API > 30: ask FINE + COARSE together
+    val requiresFineButAskBoth = requiresFine && Build.VERSION.SDK_INT > Build.VERSION_CODES.R
+    val permissions =
+        when {
+          requiresFineButAskBoth -> locationPermissionBoth
+          requiresFine -> locationPermissionFine
+          else -> locationPermissionCoarse
         }
-        val permissionCode = 6567800 + Random.Default.nextInt(100)
-        requestPermissionCookie[permissionCode] = { grantArray ->
-            Log.d(logTag, "permissionResultCallback: args($grantArray)")
-            callback.invoke(
-                when {
-                    grantArray.all { it == PackageManager.PERMISSION_GRANTED } -> {
-                        AskLocPermResult.GRANTED
-                    }
-                    requiresFineButAskBoth && grantArray.first() == PackageManager.PERMISSION_GRANTED -> {
-                        AskLocPermResult.UPGRADE_TO_FINE
-                    }
-                    else -> AskLocPermResult.DENIED
-                }
-            )
-            true
-        }
-        ActivityCompat.requestPermissions(activity!!, permissions, permissionCode)
+    val permissionCode = 6567800 + Random.Default.nextInt(100)
+    requestPermissionCookie[permissionCode] = { grantArray ->
+      Log.d(logTag, "permissionResultCallback: args($grantArray)")
+      callback.invoke(
+          when {
+            grantArray.all { it == PackageManager.PERMISSION_GRANTED } -> {
+              AskLocPermResult.GRANTED
+            }
+            requiresFineButAskBoth && grantArray.first() == PackageManager.PERMISSION_GRANTED -> {
+              AskLocPermResult.UPGRADE_TO_FINE
+            }
+            else -> AskLocPermResult.DENIED
+          })
+      true
     }
     ActivityCompat.requestPermissions(activity!!, permissions, permissionCode)
   }
